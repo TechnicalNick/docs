@@ -5,13 +5,19 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const ts = () => new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
 
 if (!LOG_CHANNEL_ID) {
-  console.warn(`[${ts()}] [ЛОГ] Переменная окружения LOG_CHANNEL_ID не установлена. Логирование в Telegram канал будет отключено.`);
+  console.warn(`[${ts()}] [ЛОГ] Переменная окружения LOG_CHANNEL_ID не установлена (или не указана в .env файле). Логирование в Telegram канал будет отключено.`);
 }
 
-const bot = new Bot(process.env.BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN');
+// Замените 'YOUR_TELEGRAM_BOT_TOKEN' на ваш актуальный токен бота из .env файла
+if (!process.env.BOT_TOKEN && process.env.BOT_TOKEN !== 'YOUR_TELEGRAM_BOT_TOKEN') { // Исправлено условие
+  console.error(`[${ts()}] [ОШИБКА] Токен бота (BOT_TOKEN) не найден. Пожалуйста, установите переменную окружения BOT_TOKEN или создайте и настройте файл .env.`);
+  process.exit(1); // Выход, если токен не установлен
+}
+const bot = new Bot(process.env.BOT_TOKEN);
 
 // --- СТАТИСТИКА ---
-const STATS_FILE_PATH = 'bot_stats.json';
+const STATS_FILE_PATH = process.env.STATS_FILE_PATH || 'bot_stats.json';
+console.log(`[${ts()}] [СТАТИСТИКА] Файл статистики будет использоваться: ${STATS_FILE_PATH}`);
 const defaultStats = { bansIssued: 0, mutesIssued: 0, warningsIssued: 0, captchaPassed: 0, captchaFailed: 0 };
 
 async function readStats() {
@@ -21,29 +27,28 @@ async function readStats() {
     return JSON.parse(data);
   } catch (error) {
     if (error.code === 'ENOENT') {
-      console.log(`[${ts()}] [СТАТИСТИКА] Файл статистики не найден, будет создан новый.`);
-      await writeStats(defaultStats); // Создаем файл с дефолтными значениями
+      console.log(`[${ts()}] [СТАТИСТИКА] Файл статистики '${STATS_FILE_PATH}' не найден, будет создан новый.`);
+      await writeStats(defaultStats); 
       return { ...defaultStats };
     } else if (error instanceof SyntaxError) {
-      console.error(`[${ts()}] [СТАТИСТИКА] Ошибка парсинга файла статистики. Будет использована статистика по умолчанию.`, error.message);
+      console.error(`[${ts()}] [СТАТИСТИКА] Ошибка парсинга файла статистики '${STATS_FILE_PATH}'. Будет использована статистика по умолчанию.`, error.message);
       return { ...defaultStats };
     }
-    console.error(`[${ts()}] [СТАТИСТИКА] Ошибка чтения файла статистики:`, error.message);
-    return { ...defaultStats }; // Возвращаем дефолт в случае других ошибок
+    console.error(`[${ts()}] [СТАТИСТИКА] Ошибка чтения файла статистики '${STATS_FILE_PATH}':`, error.message);
+    return { ...defaultStats }; 
   }
 }
 
 async function writeStats(statsObject) {
   try {
     await fs.writeFile(STATS_FILE_PATH, JSON.stringify(statsObject, null, 2));
-    // console.log(`[${ts()}] [СТАТИСТИКА] Статистика успешно записана в файл.`);
   } catch (error) {
-    console.error(`[${ts()}] [СТАТИСТИКА] Ошибка записи статистики в файл:`, error.message);
+    console.error(`[${ts()}] [СТАТИСТИКА] Ошибка записи статистики в файл '${STATS_FILE_PATH}':`, error.message);
   }
 }
 
 async function incrementStat(statName) {
-  console.log(`[${ts()}] [СТАТИСТИКА] Инкремент статы: ${statName}`);
+  // console.log(`[${ts()}] [СТАТИСТИКА] Инкремент статы: ${statName}`); // Можно раскомментировать для детального лога
   const stats = await readStats();
   stats[statName] = (stats[statName] || 0) + 1;
   await writeStats(stats);
@@ -56,11 +61,10 @@ bot.use(session({
     mutes: {},    
     pendingCaptcha: {},
     pendingTestCaptcha: {},
-    voiceMessagesDisabled: {} // { [chatId]: { [userId]: true/false } }
+    voiceMessagesDisabled: {} 
   })
 }));
 
-// Middleware для автоматического размута и обработки сообщений от заглушенных пользователей
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.from && ctx.chat && ctx.chat.type !== 'private') {
     const userId = ctx.from.id;
@@ -79,33 +83,31 @@ bot.use(async (ctx, next) => {
           });
           delete ctx.session.mutes[chatId][userId];
           if (Object.keys(ctx.session.mutes[chatId]).length === 0) delete ctx.session.mutes[chatId];
-          if (Object.keys(ctx.session.mutes).length === 0) delete ctx.session.mutes; // Удаляем пустой объект mutes
+          if (Object.keys(ctx.session.mutes).length === 0) delete ctx.session.mutes; 
           
           console.log(`[${ts()}] [АВТО-РАЗМУТ] Пользователь ${ctx.from.first_name || userId} (${userId}) автоматически размучен в чате ${chatId}.`);
           await logAction(bot.api, "АВТО-РАЗМУТ", { id: "СИСТЕМА", first_name: "Бот" }, { id: userId, description: ctx.from.first_name || `ID ${userId}` });
           await replyAndDeleteAfter(ctx, `С вас сняты ограничения на отправку сообщений, ${ctx.from.first_name}.`);
-          return next(); // Важно: вызываем next() после обработки, чтобы сообщение прошло дальше
+          return next(); 
         } catch (e) {
           console.error(`[${ts()}] [АВТО-РАЗМУТ] Ошибка при автоматическом размуте пользователя ${userId} в чате ${chatId}:`, e.message);
           return next(); 
         }
-      } else { // Мут еще активен
+      } else { 
         try {
           await ctx.deleteMessage();
           console.log(`[${ts()}] [МУТ] Сообщение от заглушенного пользователя ${userId} в чате ${chatId} удалено.`);
-          // Не вызываем next() - сообщение удалено, обработка прекращена
-          return; 
         } catch (e) {
           console.error(`[${ts()}] [МУТ] Ошибка при удалении сообщения от заглушенного пользователя ${userId} в чате ${chatId}:`, e.message);
-          return next(); // Продолжаем, если не удалось удалить сообщение
+          await next(); 
         }
+        return; 
       }
     }
   }
-  await next(); // Если не сообщение, или не от пользователя, или не в чате, или нет мута
+  await next(); 
 });
 
-// Middleware для обработки запрета голосовых сообщений
 bot.on("message:voice", async (ctx, next) => {
     if (ctx.from && ctx.chat && ctx.chat.type !== 'private') {
         const userId = ctx.from.id;
@@ -115,13 +117,11 @@ bot.on("message:voice", async (ctx, next) => {
             try {
                 await ctx.deleteMessage();
                 console.log(`[${ts()}] [VOICE_BLOCK] Удалено голосовое сообщение от пользователя ${userId} в чате ${chatId} (голосовые отключены).`);
-                // Можно добавить временное уведомление для пользователя, если нужно
-                // await replyAndDeleteAfter(ctx, "Отправка голосовых сообщений для вас отключена в этом чате.", 10000);
             } catch (e) {
                 console.error(`[${ts()}] [VOICE_BLOCK] Ошибка при удалении голосового сообщения от ${userId} в чате ${chatId}:`, e.message);
-                await next(); // Продолжаем, если не удалось удалить
+                await next(); 
             }
-            return; // Важно: не вызываем next(), если сообщение удалено
+            return; 
         }
     }
     await next();
@@ -133,7 +133,7 @@ async function logAction(ctxOrBotApiSource, action, moderator, targetUser, reaso
   if (!LOG_CHANNEL_ID) {
     return;
   }
-  console.log(`[${ts()}] [ЛОГ] Попытка отправки лога в канал ${LOG_CHANNEL_ID}: ${action} модератором ${moderator?.id} к пользователю ${targetUser?.id}`);
+  // console.log(`[${ts()}] [ЛОГ] Попытка отправки лога в канал ${LOG_CHANNEL_ID}: ${action} модератором ${moderator?.id} к пользователю ${targetUser?.id}`);
 
   const dateTime = ts();
   let moderatorDescription = "СИСТЕМА"; 
@@ -228,17 +228,17 @@ async function getTargetUser(ctx, args) {
                 method = "упоминание (text_mention)";
                 result = { id: user.id, description: user.first_name || `ID ${user.id}`, user: user };
                 break;
-            } else if (entity.type === 'mention') { // Обычное @упоминание без встроенного ID
+            } else if (entity.type === 'mention') { 
                 const offset = entity.offset;
                 const length = entity.length;
-                usernameToResolve = ctx.message.text.substring(offset + 1, offset + length); // +1 чтобы убрать @
+                usernameToResolve = ctx.message.text.substring(offset + 1, offset + length); 
                 method = "упоминание (@username из entity)";
                 break; 
             }
         }
     }
 
-    if (!result && args) { // args - это ctx.match
+    if (!result && args) { 
         if (/^\d+$/.test(args)) {
             const userId = parseInt(args, 10);
             method = "ID из аргументов";
@@ -252,10 +252,13 @@ async function getTargetUser(ctx, args) {
         } else if (args.startsWith('@')) {
             usernameToResolve = args.substring(1);
             method = "упоминание (@username из аргумента)";
+        } else if (!usernameToResolve) { // Если не было @username из entity и args не ID, то args может быть username без @
+            usernameToResolve = args;
+            method = "username из аргумента (без @)";
         }
     }
     
-    if (!result && usernameToResolve && ctx.chat?.id) { // Пытаемся разрешить username только если есть chat.id
+    if (!result && usernameToResolve && ctx.chat?.id) { 
         console.log(`[${ts()}] ${component} Попытка разрешить @${usernameToResolve} через getChatMember в чате ${ctx.chat.id}`);
         try {
             const member = await ctx.api.getChatMember(ctx.chat.id, '@' + usernameToResolve);
@@ -294,6 +297,7 @@ bot.command("help", async (ctx) => {
   Пример: <code>/mute 123456789 30</code> или ответом на сообщение: <code>/mute 30</code>
 <code>/unmute &lt;ID пользователя или ответ на сообщение&gt;</code> - <i>Снятие ограничений на отправку сообщений.</i>
 <code>/warn &lt;ID пользователя или ответ на сообщение&gt;</code> - <i>Выдать предупреждение пользователю. При достижении 3-х предупреждений предлагается автоматический бан.</i>
+<code>/unwarn &lt;ID пользователя или ответ на сообщение&gt; [количество]</code> - <i>Снять одно или указанное количество предупреждений. По умолчанию 1.</i>
 <code>/warns &lt;ID пользователя или ответ на сообщение&gt;</code> - <i>Посмотреть количество предупреждений у пользователя.</i>
 <code>/togglevoice &lt;ID пользователя или ответ на сообщение&gt;</code> - <i>Включить/отключить пользователю возможность отправлять голосовые сообщения.</i>
 <code>/mod</code> - <i>Открыть интерактивное меню модерации с кнопками для основных действий.</i>
@@ -836,6 +840,8 @@ bot.catch((err) => {
 
 bot.start();
 console.log(`[${ts()}] Бот запущен успешно!`);
+
+[end of telegram_bot_project/bot.js]
 
 [end of telegram_bot_project/bot.js]
 
